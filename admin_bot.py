@@ -3,9 +3,9 @@
 """
 
 import logging
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, ContextTypes
+    Application, CommandHandler, CallbackQueryHandler, ContextTypes
 )
 from config import ADMIN_BOT_TOKEN, ADMIN_IDS
 from database import (
@@ -37,8 +37,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Доступні команди:\n\n"
         "/addspend `<телефон> <сума>` - нарахувати витрати гостю\n"
         "/requests - заявки на виведення балів\n"
-        "/approve `<id>` - підтвердити заявку\n"
-        "/reject `<id>` - відхилити заявку\n"
         "/users - список гостей\n"
         "/guest `<телефон>` - інфо про гостя",
         parse_mode="Markdown"
@@ -118,6 +116,24 @@ async def addspend(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- /requests ---
 
+def request_card(r) -> tuple:
+    """Формує текст і кнопки для однієї заявки."""
+    username = f"@{r['username']}" if r["username"] else "немає username"
+    text = (
+        f"📋 *Заявка #{r['id']}*\n"
+        f"Гість: {r['full_name']} ({username})\n"
+        f"Телефон: {r['phone']}\n"
+        f"Запитує: *{r['amount']} балів* ({r['amount']} грн знижки)\n"
+        f"Поточний баланс: {r['balance']} балів\n"
+        f"Дата: {r['created_at'].strftime('%d.%m.%Y %H:%M')}"
+    )
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"✅ Підтвердити", callback_data=f"approve:{r['id']}"),
+        InlineKeyboardButton(f"❌ Відхилити", callback_data=f"reject:{r['id']}"),
+    ]])
+    return text, keyboard
+
+
 @admin_only
 async def requests_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показати всі заявки на виведення балів."""
@@ -127,98 +143,71 @@ async def requests_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Немає активних заявок на виведення.")
         return
 
-    text = "📋 *Заявки на виведення балів:*\n\n"
+    await update.message.reply_text(f"📋 Активних заявок: {len(reqs)}")
     for r in reqs:
-        username = f"@{r['username']}" if r["username"] else "немає username"
-        text += (
-            f"*Заявка #{r['id']}*\n"
-            f"Гість: {r['full_name']} ({username})\n"
-            f"Телефон: {r['phone']}\n"
-            f"Запитує: {r['amount']} балів ({r['amount']} грн знижки)\n"
-            f"Поточний баланс: {r['balance']} балів\n"
-            f"Дата: {r['created_at'].strftime('%d.%m.%Y %H:%M')}\n\n"
-            f"/approve {r['id']} - підтвердити\n"
-            f"/reject {r['id']} - відхилити\n"
-            f"{'--' * 15}\n"
-        )
-
-    await update.message.reply_text(text, parse_mode="Markdown")
+        text, keyboard = request_card(r)
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
 
-# --- /approve ---
+# --- ОБРОБКА КНОПОК ---
 
-@admin_only
-async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Використання: `/approve <id>`", parse_mode="Markdown")
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id not in ADMIN_IDS:
+        await query.answer("⛔ Доступ заборонено.", show_alert=True)
         return
 
-    try:
-        request_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("ID має бути числом.")
-        return
+    action, request_id_str = query.data.split(":")
+    request_id = int(request_id_str)
 
-    result = await approve_redeem(request_id, update.effective_user.id)
+    if action == "approve":
+        result = await approve_redeem(request_id, query.from_user.id)
 
-    if result is None:
-        await update.message.reply_text(f"Заявку #{request_id} не знайдено або вона вже оброблена.")
-        return
+        if result is None:
+            await query.edit_message_text(f"⚠️ Заявку #{request_id} не знайдено або вже оброблено.")
+            return
+        if result == "insufficient":
+            await query.edit_message_text(f"⚠️ Недостатньо балів на балансі гостя.")
+            return
 
-    if result == "insufficient":
-        await update.message.reply_text("Недостатньо балів на балансі гостя.")
-        return
-
-    await update.message.reply_text(
-        f"✅ Заявку #{request_id} підтверджено.\n"
-        f"Списано *{result['amount']} балів* ({result['amount']} грн знижки).",
-        parse_mode="Markdown"
-    )
-
-    # Повідомляємо гостя
-    try:
-        await context.bot.send_message(
-            chat_id=result["guest_id"],
-            text=f"✅ Вашу заявку на виведення *{result['amount']} балів* підтверджено!\n\n"
-                 f"Знижка {result['amount']} грн застосована при заселенні.",
+        await query.edit_message_text(
+            f"✅ *Заявку #{request_id} підтверджено*\n"
+            f"Гість: {result['guest_id']}\n"
+            f"Списано: {result['amount']} балів ({result['amount']} грн знижки)",
             parse_mode="Markdown"
         )
-    except Exception:
-        pass
+        try:
+            await context.bot.send_message(
+                chat_id=result["guest_id"],
+                text=f"✅ Вашу заявку на виведення *{result['amount']} балів* підтверджено!\n\n"
+                     f"Знижка {result['amount']} грн застосована при заселенні.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+    elif action == "reject":
+        result = await reject_redeem(request_id, query.from_user.id)
+
+        if not result:
+            await query.edit_message_text(f"⚠️ Заявку #{request_id} не знайдено або вже оброблено.")
+            return
+
+        await query.edit_message_text(f"❌ *Заявку #{request_id} відхилено*", parse_mode="Markdown")
+        try:
+            await context.bot.send_message(
+                chat_id=result["guest_id"],
+                text=f"❌ Вашу заявку на виведення *{result['amount']} балів* відхилено.\n\n"
+                     f"Зверніться на ресепцію для уточнення деталей.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
 
 
-# --- /reject ---
 
-@admin_only
-async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Використання: `/reject <id>`", parse_mode="Markdown")
-        return
-
-    try:
-        request_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("ID має бути числом.")
-        return
-
-    result = await reject_redeem(request_id, update.effective_user.id)
-
-    if not result:
-        await update.message.reply_text(f"Заявку #{request_id} не знайдено або вона вже оброблена.")
-        return
-
-    await update.message.reply_text(f"❌ Заявку #{request_id} відхилено.")
-
-    # Повідомляємо гостя
-    try:
-        await context.bot.send_message(
-            chat_id=result["guest_id"],
-            text=f"❌ Вашу заявку на виведення *{result['amount']} балів* відхилено.\n\n"
-                 f"Зверніться на ресепцію для уточнення деталей.",
-            parse_mode="Markdown"
-        )
-    except Exception:
-        pass
 
 
 # --- /users ---
@@ -313,10 +302,9 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addspend", addspend))
     app.add_handler(CommandHandler("requests", requests_list))
-    app.add_handler(CommandHandler("approve", approve))
-    app.add_handler(CommandHandler("reject", reject))
     app.add_handler(CommandHandler("users", users))
     app.add_handler(CommandHandler("guest", guest_info))
+    app.add_handler(CallbackQueryHandler(button_handler))
 
     logger.info("Адмін-бот запущено.")
     app.run_polling()
