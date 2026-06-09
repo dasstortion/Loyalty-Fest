@@ -3,12 +3,14 @@
 """
 
 import logging
+import io
+import qrcode
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     filters, ContextTypes, ConversationHandler
 )
-from config import GUEST_BOT_TOKEN, WELCOME_BONUS, MIN_REDEEM
+from config import GUEST_BOT_TOKEN, WELCOME_BONUS, MIN_REDEEM, ADMIN_BOT_USERNAME
 from database import (
     get_guest, register_guest, add_points, get_balance,
     get_last_transactions, create_redeem_request, init_db, get_conn
@@ -235,12 +237,24 @@ async def redeem_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     request_id = await create_redeem_request(user.id, amount)
 
+    # Генеруємо QR-код з посиланням на адмін-бота
+    qr_link = f"https://t.me/{ADMIN_BOT_USERNAME}?start=redeem_{request_id}"
+    qr_img = qrcode.make(qr_link)
+    buf = io.BytesIO()
+    qr_img.save(buf, format="PNG")
+    buf.seek(0)
+
     await update.message.reply_text(
-        f"✅ Заявку #{request_id} на виведення *{amount} балів* ({amount} грн знижки) подано!\n\n"
-        f"Адміністратор підтвердить заявку при заселенні. "
-        f"Ви отримаєте повідомлення після підтвердження.",
+        f"✅ *Заявку #{request_id} подано!*\n\n"
+        f"Сума: *{amount} балів* ({amount} грн знижки)\n\n"
+        f"Покажіть QR-код нижче ресепціоністу при заселенні - "
+        f"він підтвердить списання балів.",
         parse_mode="Markdown",
         reply_markup=main_menu()
+    )
+    await update.message.reply_photo(
+        photo=buf,
+        caption=f"QR-код для заявки #{request_id} - {amount} балів"
     )
     return ConversationHandler.END
 
