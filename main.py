@@ -28,7 +28,7 @@ async def main():
     admin_app = Application.builder().token(ADMIN_BOT_TOKEN).build()
 
     # Реєструємо хендлери
-    from telegram.ext import CommandHandler, MessageHandler, filters, ConversationHandler
+    from telegram.ext import CommandHandler, MessageHandler, filters, ConversationHandler, CallbackQueryHandler
     from guest_bot import (
         start, receive_phone, balance, invite,
         redeem_start, redeem_amount, cancel, menu_handler,
@@ -36,7 +36,7 @@ async def main():
     )
     from admin_bot import (
         start as admin_start, addspend, requests_list,
-        approve, reject, users, guest_info
+        users, guest_info, button_handler
     )
 
     # Гостьовий бот
@@ -63,10 +63,9 @@ async def main():
     admin_app.add_handler(CommandHandler("start", admin_start))
     admin_app.add_handler(CommandHandler("addspend", addspend))
     admin_app.add_handler(CommandHandler("requests", requests_list))
-    admin_app.add_handler(CommandHandler("approve", approve))
-    admin_app.add_handler(CommandHandler("reject", reject))
     admin_app.add_handler(CommandHandler("users", users))
     admin_app.add_handler(CommandHandler("guest", guest_info))
+    admin_app.add_handler(CallbackQueryHandler(button_handler))
 
     # Запускаємо все паралельно
     logger.info("Запуск обох ботів...")
