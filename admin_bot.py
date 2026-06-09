@@ -10,11 +10,8 @@ from telegram.ext import (
 from config import ADMIN_BOT_TOKEN, ADMIN_IDS
 from database import (
     get_guest_by_phone, process_spend, get_pending_requests,
-    approve_redeem, reject_redeem, get_all_guests, init_db
+    approve_redeem, reject_redeem, get_all_guests, init_db, get_guest
 )
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 # --- ПЕРЕВІРКА АДМІНА ---
@@ -28,10 +25,22 @@ def admin_only(func):
     return wrapper
 
 
-# --- /start ---
+# --- /start (також обробляє QR-скан) ---
 
 @admin_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Якщо відкрито через QR-скан: /start redeem_5
+    if context.args and context.args[0].startswith("redeem_"):
+        try:
+            request_id = int(context.args[0].split("_")[1])
+        except (ValueError, IndexError):
+            await update.message.reply_text("Невірний QR-код.")
+            return
+
+        await show_redeem_request(update, context, request_id)
+        return
+
+    # Звичайне меню
     await update.message.reply_text(
         "🏨 *Адмін-панель готелю*\n\n"
         "Доступні команди:\n\n"
@@ -41,6 +50,50 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/guest `<телефон>` - інфо про гостя",
         parse_mode="Markdown"
     )
+
+
+async def show_redeem_request(update: Update, context: ContextTypes.DEFAULT_TYPE, request_id: int):
+    """Показати картку заявки після сканування QR."""
+    from database import get_conn
+    conn = await get_conn()
+    try:
+        req = await conn.fetchrow(
+            """
+            SELECT r.*, g.full_name, g.phone, g.username, g.balance
+            FROM redeem_requests r
+            JOIN guests g ON g.id = r.guest_id
+            WHERE r.id = $1
+            """,
+            request_id
+        )
+    finally:
+        await conn.close()
+
+    if not req:
+        await update.message.reply_text(f"Заявку #{request_id} не знайдено.")
+        return
+
+    if req["status"] != "pending":
+        status_label = "підтверджена" if req["status"] == "approved" else "відхилена"
+        await update.message.reply_text(
+            f"⚠️ Заявка #{request_id} вже {status_label}."
+        )
+        return
+
+    username = f"@{req['username']}" if req["username"] else "немає username"
+    text = (
+        f"🔍 *Заявка на виведення балів #{request_id}*\n\n"
+        f"👤 Гість: {req['full_name']} ({username})\n"
+        f"📱 Телефон: {req['phone']}\n"
+        f"💰 Баланс зараз: {req['balance']} балів\n"
+        f"💸 Хоче списати: *{req['amount']} балів* ({req['amount']} грн знижки)\n"
+        f"📅 Заявку подано: {req['created_at'].strftime('%d.%m.%Y %H:%M')}"
+    )
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Підтвердити списання", callback_data=f"approve:{request_id}"),
+        InlineKeyboardButton("❌ Відхилити", callback_data=f"reject:{request_id}"),
+    ]])
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
 
 # --- /addspend ---
@@ -174,8 +227,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.edit_message_text(
             f"✅ *Заявку #{request_id} підтверджено*\n"
-            f"Гість: {result['guest_id']}\n"
-            f"Списано: {result['amount']} балів ({result['amount']} грн знижки)",
+            f"Списано: {result['amount']} балів ({result['amount']} грн знижки)\n\n"
+            f"Внесіть оплату 'Бали лояльності' в Servio вручну.",
             parse_mode="Markdown"
         )
         try:
