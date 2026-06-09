@@ -10,7 +10,7 @@ ADMIN_BOT_TOKEN = "8810457016:AAEZKc1nlwZ9uX3VCFaEJ1OSu1M8VKbVVL4"
 
 # --- БАЗА ДАНИХ ---
 # Отримай у Supabase: Settings -> Database -> Connection string -> URI
-DATABASE_URL = "postgresql://postgres:AntoRost230282!@db.cfcnficftxklpedgrdlg.supabase.co:5432/postgres"
+DATABASE_URL = "postgresql://postgres.cfcnficftxklpedgrdlg:AntoRost230282!@aws-0-eu-west-1.pooler.supabase.com:5432/postgres"
 
 # --- АДМІНИ ---
 # Telegram ID адмінів (можна дізнатись у @userinfobot)
